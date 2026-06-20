@@ -43,6 +43,7 @@ class Stock(Base):
     additional_info = Column(Text)
     ipoyear = Column(String(10))
     detail_link = Column(String(255))
+    website = Column(String(255))
     last_updated_at = Column(DateTime)
     enabled = Column(Integer)
     stock_class = Column(Integer)

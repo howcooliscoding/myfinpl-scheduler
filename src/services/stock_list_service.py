@@ -10,8 +10,16 @@ from sqlalchemy import desc
 from src.models.database import SessionLocal, Stock, StockTag, ManualSymbol
 from src.utils import s3_util
 from src.utils.exchange_rate import get_exchange_rate, get_usd_conversion_rates
+from src.services.stock_detail_service import domain_from_website
 
 logger = logging.getLogger(__name__)
+
+
+def _top_names(stocks, n: int = 5) -> str:
+    """대표 종목명(한글 우선) 상위 n개를 ', '로 연결. SEO description의 동적
+    종목 치환용 — 순위 변동이 자동 반영되고 페이지 간 문장이 달라져 중복 콘텐츠를
+    줄인다."""
+    return ", ".join((s.name_ko or s.name or s.symbol) for s in stocks[:n])
 
 
 def _get_manual_symbols(session, country_code: str):
@@ -144,25 +152,20 @@ def prepare_api_for_us_stock():
             .all()
         )
 
-        def _names(stocks):
-            return ", ".join(
-                f"{s.name_ko or s.name}({s.symbol})" for s in stocks[:10]
-            )
-
         exchange_types = {
             "all": {
-                "title": "미국 주식 시가총액 순위 TOP 100",
-                "description": f"미국주식 전체 시가총액 (Market Cap) 기업 순위 TOP100 입니다. {_names(us_all)} 등 미국 상장 기업들의 시가총액 순위를 확인 할수 있습니다.",
+                "title": "미국 주식 시가 총액 순위 TOP 100 | 실시간 미국 시총",
+                "description": f"미국 주식 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {_top_names(us_all)} 등 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
                 "stocks": us_all,
             },
             "nasdaq": {
-                "title": "미국주식 - 나스닥(Nasdaq) 시가총액 기업 순위 TOP100",
-                "description": f"미국주식 나스닥(Nasdaq) 시가총액 (Market Cap) 기업 순위 TOP100 입니다. {_names(nasdaq)} 등 나스닥 기업들의 시가총액 순위 입니다.",
+                "title": "나스닥 시가 총액 순위 TOP 100 | NASDAQ 시총",
+                "description": f"나스닥 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {_top_names(nasdaq)} 등 나스닥 상장 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
                 "stocks": nasdaq,
             },
             "nyse": {
-                "title": "미국주식 - 뉴욕증권거래소(NYSE) 시가총액 기업 순위 TOP100",
-                "description": f"미국주식 뉴욕증권거래소(NYSE) 시가총액 (Market Cap) 기업 순위 TOP100 입니다. {_names(nyse)} 등 뉴욕증권거래소(NYSE) 기업들의 시가총액 순위 입니다.",
+                "title": "NYSE 시가 총액 순위 TOP 100 | 뉴욕증권거래소 시총",
+                "description": f"NYSE(뉴욕증권거래소) 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {_top_names(nyse)} 등 뉴욕증권거래소 상장 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
                 "stocks": nyse,
             },
         }
@@ -180,6 +183,7 @@ def prepare_api_for_us_stock():
                     "industry": stock.industry,
                     "industry_ko": stock.industry_ko,
                     "symbol": stock.symbol,
+                    "domain": domain_from_website(stock.website),
                     "market_cap_dollor": stock.market_cap,
                     "market_cap_bi_dollor": int((stock.market_cap or 0) / 1_000_000_000),
                     "market_cap_bi_won": int(((stock.market_cap or 0) * exchange_rate) / 1_000_000_000_000),
@@ -211,6 +215,96 @@ def prepare_api_for_us_stock():
         session.close()
 
 
+def _kr_stock_item(stock, idx):
+    """국내 랭킹 항목 dict 생성 (kr/all·kospi·kosdaq 공용)."""
+    exchange_name = {"NMS": "NASDAQ", "NYQ": "NYSE"}.get(stock.exchange, stock.exchange)
+    return {
+        "rank": idx + 1,
+        "name": stock.name,
+        "name_ko": stock.name_ko,
+        "sector": stock.sector,
+        "sector_ko": stock.sector_ko,
+        "industry": stock.industry,
+        "industry_ko": stock.industry_ko,
+        "symbol": stock.symbol,
+        "domain": domain_from_website(stock.website),
+        "slug": stock.slug,
+        "market_cap_won": stock.market_cap,
+        "market_cap_100mi_won": int((stock.market_cap or 0) / 100_000_000),
+        "market_cap_bi_won": int((stock.market_cap or 0) / 1_000_000_000_000),
+        "cagr_3year": stock.cagr_3year,
+        "cagr_5year": stock.cagr_5year,
+        "cagr_7year": stock.cagr_7year,
+        "cagr_10year": stock.cagr_10year,
+        "cagr_20year": stock.cagr_20year,
+        "cagr_30year": stock.cagr_30year,
+        "country": stock.country,
+        "exchange": exchange_name,
+        "dividend": stock.dividend,
+        "yield": stock.dividend_yield,
+        "increase_rate": {
+            "ytd": stock.increase_rate_ytd,
+            "month": stock.increase_rate_month,
+            "year": stock.increase_rate_year,
+            "3year": stock.increase_rate_year3,
+        },
+    }
+
+
+def prepare_api_for_kr_sub_markets():
+    """코스피(KOSPI)·코스닥(KOSDAQ) 시장별 시가총액 랭킹 생성.
+
+    코스닥 종목이 아직 DB에 수집되지 않은 경우 해당 랭킹은 빈 리스트로 생성되며,
+    종목이 수집되면 자동으로 채워진다. description의 대표 종목은 실제 상위 종목으로
+    동적 치환하되, 데이터가 없으면 규칙 문서의 예시 종목으로 폴백한다.
+    """
+    exchange_rate = get_exchange_rate()
+    session = SessionLocal()
+    try:
+        markets = [
+            {
+                "slug": "kospi", "label": "코스피",
+                "title": "코스피 시가 총액 순위 TOP 100 | KOSPI 시총",
+                "exchanges": ["KSC"],
+                "fallback": "삼성전자, SK하이닉스, LG에너지솔루션, 현대차, 삼성바이오로직스",
+            },
+            {
+                "slug": "kosdaq", "label": "코스닥",
+                "title": "코스닥 시가 총액 순위 TOP 100 | KOSDAQ 시총",
+                "exchanges": ["KOE", "KSQ", "KOSDAQ", "KDQ"],
+                "fallback": "에코프로비엠, 알테오젠, 에코프로, HLB, 리노공업",
+            },
+        ]
+        for m in markets:
+            rows = (
+                session.query(Stock)
+                .filter(
+                    Stock.stock_class.is_(None),
+                    Stock.country_code == "kr",
+                    Stock.exchange.in_(m["exchanges"]),
+                )
+                .order_by(desc(Stock.market_cap))
+                .limit(100)
+                .all()
+            )
+            top_names = _top_names(rows) or m["fallback"]
+            stock_list = [_kr_stock_item(s, i) for i, s in enumerate(rows)]
+            result = _deep_camel_keys({
+                "title": m["title"],
+                "description": f"{m['label']} 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {top_names} 등 {m['label']} 상장 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
+                "list": stock_list,
+                "exchange_rate": exchange_rate,
+                "last_updated_at": datetime.now().isoformat(),
+            })
+            s3_util.upload_json(
+                f"api-data/v3/json/investment/stock/kr/{m['slug']}/recent/ranking/list.json",
+                result,
+            )
+            logger.info(f"Uploaded KR {m['slug']} ranking: {len(stock_list)} stocks")
+    finally:
+        session.close()
+
+
 def prepare_api_for_korean_stock():
     """Generate ranked Korean stock list and upload to S3."""
     exchange_rate = get_exchange_rate()
@@ -223,7 +317,7 @@ def prepare_api_for_korean_stock():
             .all()
         )
 
-        names = ", ".join(f"{s.name_ko or s.name}({s.symbol})" for s in kr_all[:10])
+        top_names = _top_names(kr_all)
 
         # Slug-symbol map
         slug_symbol_map = {s.slug: s.symbol for s in kr_all if s.slug}
@@ -233,7 +327,7 @@ def prepare_api_for_korean_stock():
         )
 
         stock_list = []
-        for idx, stock in enumerate(kr_all[:200]):
+        for idx, stock in enumerate(kr_all[:100]):
             exchange_name = {"NMS": "NASDAQ", "NYQ": "NYSE"}.get(stock.exchange, stock.exchange)
             item = {
                 "rank": idx + 1,
@@ -244,6 +338,7 @@ def prepare_api_for_korean_stock():
                 "industry": stock.industry,
                 "industry_ko": stock.industry_ko,
                 "symbol": stock.symbol,
+                "domain": domain_from_website(stock.website),
                 "slug": stock.slug,
                 "market_cap_won": stock.market_cap,
                 "market_cap_100mi_won": int((stock.market_cap or 0) / 100_000_000),
@@ -268,8 +363,8 @@ def prepare_api_for_korean_stock():
             stock_list.append(item)
 
         result = _deep_camel_keys({
-            "title": "국내 기업 시가 총액 기업 순위 TOP200",
-            "description": f"국내 기업 전체 시가 총액 기준 기업 순위 TOP200 입니다. {names} 등 국내 상장 기업들의 시가 총액 순위를 확인 할수 있습니다.",
+            "title": "국내 기업 시가 총액 순위 TOP 100 | 코스피·코스닥 통합",
+            "description": f"국내 기업 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {top_names} 등 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
             "list": stock_list,
             "exchange_rate": exchange_rate,
             "last_updated_at": datetime.now().isoformat(),
@@ -351,7 +446,7 @@ def prepare_api_for_world_stock():
         ranked.sort(key=lambda x: x[0], reverse=True)
         ranked = ranked[:100]
 
-        names = ", ".join(f"{st.name_ko or st.name}({st.symbol})" for _, _, st in ranked[:10])
+        top_names = ", ".join((st.name_ko or st.name or st.symbol) for _, _, st in ranked[:5])
 
         exchange_name_map = {"NMS": "NASDAQ", "NYQ": "NYSE"}
         stock_list = []
@@ -367,6 +462,7 @@ def prepare_api_for_world_stock():
                 "industry": stock.industry,
                 "industry_ko": stock.industry_ko,
                 "symbol": stock.symbol,
+                "domain": domain_from_website(stock.website),
                 "currency": cur,
                 "country": stock.country,
                 "country_ko": country_ko,
@@ -387,8 +483,8 @@ def prepare_api_for_world_stock():
             stock_list.append(item)
 
         result = _deep_camel_keys({
-            "title": "전세계 시가총액 기업 순위 TOP 100",
-            "description": f"전세계 시가총액 (Market Cap) 기업 순위 TOP 100 입니다. 각국 통화로 표시된 시가총액을 달러(USD) 기준으로 환산하여 순위를 매겼습니다. {names} 등 전세계 상장 기업들의 시가총액 순위를 달러와 원화로 확인 할수 있습니다.",
+            "title": "전세계 시가 총액 순위 TOP 100 | 글로벌 시총 순위",
+            "description": f"전세계 시가 총액 순위 상위 100개 기업의 기업 가치를 확인하세요. {top_names} 등 글로벌 시총 상위 기업의 순위와 주가, 등락률을 빠르게 비교할 수 있습니다.",
             "list": stock_list,
             "exchange_rate": exchange_rate,
             "last_updated_at": datetime.now().isoformat(),

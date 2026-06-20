@@ -40,6 +40,7 @@ def main():
         prepare_api_for_us_stock,
         prepare_api_for_korean_stock,
         prepare_api_for_world_stock,
+        prepare_api_for_kr_sub_markets,
     )
     from src.services.stock_detail_service import StockDetailService
     from src.services.stock_home_service import (
@@ -102,6 +103,7 @@ def main():
     prepare_home_contents()
     prepare_api_for_us_stock()
     prepare_api_for_korean_stock()
+    prepare_api_for_kr_sub_markets()
     prepare_api_for_world_stock()
     prepare_list_by_cagr()
     prepare_sector_api_list()

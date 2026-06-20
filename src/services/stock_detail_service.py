@@ -35,6 +35,20 @@ def _flatten_columns(df):
     return df
 
 
+def domain_from_website(website):
+    """Extract a bare domain (e.g. 'apple.com') from a website URL for use with
+    favicon services. Returns None if not parseable."""
+    if not website:
+        return None
+    d = str(website).strip().lower()
+    d = d.split("://", 1)[-1]      # strip scheme
+    d = d.split("/", 1)[0]          # strip path
+    d = d.split("?", 1)[0]
+    if d.startswith("www."):
+        d = d[4:]
+    return d or None
+
+
 class StockDetailService:
     def __init__(self, country_code: str):
         self.country_code = country_code
@@ -121,6 +135,7 @@ class StockDetailService:
             "country": tick_info.get("country"),
             "sector": tick_info.get("sector"),
             "industry": tick_info.get("industry"),
+            "website": tick_info.get("website") or tick_info.get("irWebsite"),
         }
 
         dividends = []
@@ -227,6 +242,10 @@ class StockDetailService:
             result["name"] = english_name
             # 한글 이름: stock_names 우선, 없으면 영문 이름으로 폴백 (절대 빈값/None 아님)
             result["name_ko"] = (sn.name if sn and sn.name else None) or english_name
+            # 기업 로고(favicon)용 도메인. 신규 수집값 우선, 없으면 기존 DB 값 유지.
+            website = stock_meta.get("website") or (stock_db.website if stock_db else None)
+            result["website"] = website
+            result["domain"] = domain_from_website(website)
             if stock_db:
                 result["sector_ko"] = stock_db.sector_ko or stock_db.sector
                 result["industry_ko"] = stock_db.industry_ko or stock_db.industry
@@ -296,6 +315,8 @@ class StockDetailService:
                 stock.sector = stock_meta["sector"]
             if not stock.industry and stock_meta.get("industry"):
                 stock.industry = stock_meta["industry"]
+            if stock_meta.get("website"):
+                stock.website = stock_meta["website"]
 
             stock.dividend_yield = result.get("yield")
             stock.dividend = result.get("dividend")
