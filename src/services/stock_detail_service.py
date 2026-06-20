@@ -92,8 +92,8 @@ class StockDetailService:
             info = {
                 "shortName": tick_info.get("shortName", ""),
                 "longName": tick_info.get("longName", ""),
-                "dividendYield": tick_info.get("dividendYield", ""),
-                "dividendRate": tick_info.get("dividendRate", ""),
+                "dividendYield": tick_info.get("dividendYield") or None,
+                "dividendRate": tick_info.get("dividendRate") or None,
                 "forwardPE": tick_info.get("forwardPE", ""),
                 "currency": fast.currency,
                 "exchange": fast.exchange,
@@ -105,10 +105,23 @@ class StockDetailService:
             info = {
                 "shortName": tick_info.get("shortName", ""),
                 "longName": tick_info.get("longName", ""),
-                "dividendYield": tick_info.get("dividendYield", ""),
-                "dividendRate": tick_info.get("dividendRate", ""),
+                "dividendYield": tick_info.get("dividendYield") or None,
+                "dividendRate": tick_info.get("dividendRate") or None,
             }
             market_cap = tick_info.get("marketCap")
+
+        # Descriptive metadata used to fully populate the DB row. This matters
+        # for manually-added tickers (e.g. SPCX/SpaceX) that are created here for
+        # the first time and would otherwise have no name/exchange/sector and
+        # thus be excluded from ranking queries.
+        stock_meta = {
+            "name": tick_info.get("longName") or tick_info.get("shortName") or info.get("longName") or info.get("shortName") or "",
+            "exchange": info.get("exchange") or tick_info.get("exchange"),
+            "currency": info.get("currency") or tick_info.get("currency"),
+            "country": tick_info.get("country"),
+            "sector": tick_info.get("sector"),
+            "industry": tick_info.get("industry"),
+        }
 
         dividends = []
         try:
@@ -141,8 +154,8 @@ class StockDetailService:
 
         result = {
             "symbol": symbol,
-            "yield": info.get("dividendYield", ""),
-            "dividend": info.get("dividendRate", ""),
+            "yield": info.get("dividendYield") or None,
+            "dividend": info.get("dividendRate") or None,
             "end_close": end_value,
             "market_cap": market_cap,
         }
@@ -208,8 +221,12 @@ class StockDetailService:
         session = SessionLocal()
         try:
             sn = session.query(StockName).filter(StockName.symbol == symbol, StockName.locale == "ko").first()
-            result["name_ko"] = sn.name if sn else info.get("shortName", "")
             stock_db = session.query(Stock).filter(Stock.symbol == symbol).first()
+            # 영문 이름: 데이터소스(longName/shortName) > DB name > 심볼
+            english_name = stock_meta.get("name") or (stock_db.name if stock_db else None) or symbol
+            result["name"] = english_name
+            # 한글 이름: stock_names 우선, 없으면 영문 이름으로 폴백 (절대 빈값/None 아님)
+            result["name_ko"] = (sn.name if sn and sn.name else None) or english_name
             if stock_db:
                 result["sector_ko"] = stock_db.sector_ko or stock_db.sector
                 result["industry_ko"] = stock_db.industry_ko or stock_db.industry
@@ -262,6 +279,24 @@ class StockDetailService:
                 session.add(stock)
 
             stock.country_code = self.country_code
+
+            # Populate descriptive metadata. Refresh exchange/currency from the
+            # data source every run (so newly-added tickers become eligible for
+            # ranking queries), but preserve any curated name/sector values by
+            # only filling them when currently empty.
+            if stock_meta.get("exchange"):
+                stock.exchange = stock_meta["exchange"]
+            if stock_meta.get("currency"):
+                stock.currency = stock_meta["currency"]
+            if not stock.name and stock_meta.get("name"):
+                stock.name = stock_meta["name"]
+            if not stock.country and stock_meta.get("country"):
+                stock.country = stock_meta["country"]
+            if not stock.sector and stock_meta.get("sector"):
+                stock.sector = stock_meta["sector"]
+            if not stock.industry and stock_meta.get("industry"):
+                stock.industry = stock_meta["industry"]
+
             stock.dividend_yield = result.get("yield")
             stock.dividend = result.get("dividend")
             stock.market_cap = market_cap

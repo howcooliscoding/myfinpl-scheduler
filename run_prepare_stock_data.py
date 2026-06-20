@@ -27,11 +27,19 @@ def main():
 
     from src.utils.slack_util import send_message
     from src.utils.cloudfront_util import create_invalidation
+    from src.utils.exchange_rate import update_exchange_rate
+
+    # Update exchange rate first
+    try:
+        update_exchange_rate()
+    except Exception as e:
+        logger.error(f"Exchange rate update failed: {e}")
     from src.services.stock_list_service import (
         prepare_api_all_symbol_list,
         get_api_data_symbol_list,
         prepare_api_for_us_stock,
         prepare_api_for_korean_stock,
+        prepare_api_for_world_stock,
     )
     from src.services.stock_detail_service import StockDetailService
     from src.services.stock_home_service import (
@@ -94,6 +102,7 @@ def main():
     prepare_home_contents()
     prepare_api_for_us_stock()
     prepare_api_for_korean_stock()
+    prepare_api_for_world_stock()
     prepare_list_by_cagr()
     prepare_sector_api_list()
 

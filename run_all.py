@@ -23,9 +23,19 @@ def main():
         logger.info("S3 upload payload logging ENABLED")
 
     from src.utils.slack_util import send_message
+    from src.utils.exchange_rate import update_exchange_rate
 
     total_start = time.time()
     send_message("myfinpl-scheduler: 전체 데이터 수집 시작")
+
+    # Phase 0: Update exchange rate before processing
+    logger.info("=" * 60)
+    logger.info("Phase 0: Exchange Rate Update")
+    logger.info("=" * 60)
+    try:
+        update_exchange_rate()
+    except Exception as e:
+        logger.error(f"Exchange rate update failed: {e}")
 
     logger.info("=" * 60)
     logger.info("Phase 1: Stock Data")

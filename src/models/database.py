@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, Float, String, Text, DateTime, Enum, BigInteger
+from sqlalchemy import create_engine, Column, Integer, Float, String, Text, DateTime, Enum, BigInteger, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 from src.config.settings import DATABASE_URL
 
@@ -119,6 +119,23 @@ class StockTag(Base):
     display_text = Column(String(255))
 
 
+class ManualSymbol(Base):
+    """Curated tickers that must always be included in the stock pipeline,
+    regardless of market-cap ranking or exchange filters (e.g. SPCX/SpaceX).
+    """
+    __tablename__ = "manual_symbols"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(50), unique=True, index=True)
+    name = Column(String(255))
+    # "us" or "kr" - determines which pipeline processes the symbol
+    country_code = Column(String(10), default="us")
+    enabled = Column(Integer, default=1)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+
 class StockSector(Base):
     __tablename__ = "stock_sectors"
 
@@ -193,6 +210,51 @@ class EtfTag(Base):
     tag_type = Column(String(50))
     value = Column(String(255))
     display_text = Column(String(255))
+
+
+class EtfSector(Base):
+    __tablename__ = "etf_sectors"
+
+    slug = Column(String(100), primary_key=True)
+    name = Column(String(255))
+    name_en = Column(String(255))
+    category_match = Column(String(255), nullable=True)
+    sort_order = Column(Integer, default=0)
+    description = Column(Text, nullable=True)
+
+
+class EtfTheme(Base):
+    __tablename__ = "etf_themes"
+
+    slug = Column(String(100), primary_key=True)
+    name = Column(String(255))
+    s3_crawl_path = Column(String(512), nullable=True)
+    sort_order = Column(Integer, default=0)
+    description = Column(Text, nullable=True)
+
+
+class SectorEtf(Base):
+    __tablename__ = "sector_etfs"
+    __table_args__ = (
+        UniqueConstraint("sector_slug", "symbol", name="uq_sector_etf"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sector_slug = Column(String(100), index=True)
+    symbol = Column(String(50), index=True)
+    sort_order = Column(Integer, default=0)
+
+
+class ThemeEtf(Base):
+    __tablename__ = "theme_etfs"
+    __table_args__ = (
+        UniqueConstraint("theme_slug", "symbol", name="uq_theme_etf"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    theme_slug = Column(String(100), index=True)
+    symbol = Column(String(50), index=True)
+    sort_order = Column(Integer, default=0)
 
 
 class Currency(Base):

@@ -34,9 +34,21 @@ def _flatten_columns(df):
     return df
 
 
+# S3 심볼 리스트에 없더라도 항상 포함할 ETF 심볼
+FIXED_SYMBOLS = [
+    "SOXQ", "PSI", "FTXL", "CHPS",
+]
+
+
 def get_all_etf_symbols() -> List[str]:
     data = s3_util.download_json("crawl-result/v2/json/investment/etf/symbol_list.json")
-    return [item["symbol"] for item in data]
+    symbols = [item["symbol"] for item in data]
+    seen = set(symbols)
+    for sym in FIXED_SYMBOLS:
+        if sym not in seen:
+            symbols.append(sym)
+            seen.add(sym)
+    return symbols
 
 
 def process_etf(symbol: str):
@@ -86,6 +98,44 @@ def process_etf(symbol: str):
     fund_holding = t.fund_holding_info.get(symbol, {})
     if isinstance(fund_holding, str):
         fund_holding = {}
+    fund_profile = t.fund_profile.get(symbol, {})
+    if isinstance(fund_profile, str):
+        fund_profile = {}
+
+    # top holdings
+    holdings = []
+    try:
+        fth = t.fund_top_holdings
+        if isinstance(fth, pd.DataFrame) and not fth.empty:
+            for _, row in fth.iterrows():
+                holdings.append({
+                    "symbol": row.get("symbol", ""),
+                    "name": row.get("holdingName", ""),
+                    "holding_percent": float(row["holdingPercent"]) if pd.notna(row.get("holdingPercent")) else 0,
+                })
+    except Exception:
+        pass
+
+    # sector weightings
+    sector_weightings = []
+    try:
+        fsw = t.fund_sector_weightings
+        if isinstance(fsw, pd.DataFrame) and not fsw.empty:
+            for idx, row in fsw.iterrows():
+                name = idx if isinstance(idx, str) else str(idx)
+                ratio = float(row.iloc[0]) if pd.notna(row.iloc[0]) else 0
+                sector_weightings.append({"name": name, "ratio": ratio})
+    except Exception:
+        pass
+
+    # fund profile fields
+    crawled_issuer = fund_profile.get("family")
+    crawled_category_name = fund_profile.get("categoryName")
+    crawled_legal_type = fund_profile.get("legalType")
+    fees_info = fund_profile.get("feesExpensesInvestment", {})
+    crawled_expense_ratio = fees_info.get("annualReportExpenseRatio")
+
+    crawled_currency = summary.get("currency")
 
     tick = yf.Ticker(symbol)
     dividends = []
@@ -124,6 +174,13 @@ def process_etf(symbol: str):
             "volume": crawled_volume or (etf.volume if etf else None),
             "segment": etf.segment if etf else "",
             "category": etf.category if etf else "",
+            "issuer": crawled_issuer,
+            "brand": crawled_issuer,
+            "index_tracked": crawled_category_name,
+            "expense_ratio": f"{crawled_expense_ratio:.2%}" if crawled_expense_ratio else None,
+            "currency": crawled_currency,
+            "holdings": holdings or None,
+            "sector_weightings": sector_weightings or None,
         }
     finally:
         session.close()
@@ -171,6 +228,10 @@ def process_etf(symbol: str):
     result.update({
         "end_close": end_value,
         "yield": crawled_yield,
+        "summary": {
+            "fifty_two_week_high": summary.get("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": summary.get("fiftyTwoWeekLow"),
+        },
         "compare_to_max_in_1_year": compare.get("one_year"),
         "compare_to_max_in_period": compare,
         "increase_stat": increase_stat,

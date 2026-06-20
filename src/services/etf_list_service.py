@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from sqlalchemy import desc
 
-from src.models.database import SessionLocal, Etf
+from src.models.database import SessionLocal, Etf, EtfSector, EtfTheme, SectorEtf, ThemeEtf
 from src.utils import s3_util
 from src.utils.exchange_rate import get_exchange_rate
 
@@ -25,24 +25,6 @@ def _deep_camel_keys(obj):
     if isinstance(obj, list):
         return [_deep_camel_keys(i) for i in obj]
     return obj
-
-
-# Sector/theme maps matching the Ruby CrawlEtfCollections
-SECTOR_MAP = {
-    "technology": ["테크놀로지", "/etfdb-category/technology-equities/"],
-    "healthcare": ["헬스케어", "/etfdb-category/health-&-biotech-equities/"],
-    "real-estate": ["부동산", "/etfdb-category/real-estate/"],
-    "financials": ["금융", "/etfdb-category/financials-equities/"],
-    "energy": ["에너지", "/etfdb-category/energy-equities/"],
-}
-
-THEME_MAP = {
-    "ai": ["AI/인공지능", "/themes/ai-etfs/"],
-    "blockchain": ["블록체인", "/themes/blockchain-etfs/"],
-    "esg": ["ESG", "/themes/esg-investing-etfs/"],
-    "leveraged-2x": ["레버리지 2배", "/themes/leveraged-2x-etfs/"],
-    "leveraged-3x": ["레버리지 3배", "/themes/leveraged-3x-etfs/"],
-}
 
 
 def _etf_attrs(etf: Etf) -> dict:
@@ -79,49 +61,76 @@ def prepare_home_and_list():
         )
         aum_result = [_deep_camel_keys(_etf_attrs(e)) for e in aum_etfs]
 
-        # Sector lists from S3 (pre-crawled)
+        # Sector lists: mapping table + category_match fallback from DB
         sector_result = []
-        for slug, (display_name, path) in SECTOR_MAP.items():
-            s3_key = f"crawl-result/v2/json/investment/etf-list/by-request-url{path}"
-            try:
-                etf_list = s3_util.download_json(s3_key)
-            except Exception:
-                etf_list = []
-            # Enrich with DB data
-            symbols = [e["symbol"] for e in etf_list]
-            db_etfs = {e.symbol: e for e in session.query(Etf).filter(Etf.symbol.in_(symbols)).all()}
-            enriched = []
-            for item in etf_list:
-                if item["symbol"] in db_etfs:
-                    item.update(_etf_attrs(db_etfs[item["symbol"]]))
-                    enriched.append(item)
+        sectors = session.query(EtfSector).order_by(EtfSector.sort_order).all()
+        for sector in sectors:
+            # 매핑 테이블 심볼 + category_match로 DB 자동 보충
+            mapped_symbols = [
+                m.symbol for m in
+                session.query(SectorEtf)
+                .filter(SectorEtf.sector_slug == sector.slug)
+                .order_by(SectorEtf.sort_order)
+                .all()
+            ]
+            if sector.category_match:
+                category_etfs = (
+                    session.query(Etf)
+                    .filter(Etf.category == sector.category_match, Etf.name.isnot(None))
+                    .all()
+                )
+                seen = set(mapped_symbols)
+                for e in category_etfs:
+                    if e.symbol not in seen:
+                        mapped_symbols.append(e.symbol)
+                        seen.add(e.symbol)
+            if not mapped_symbols:
+                continue
+            etfs_by_symbol = {
+                e.symbol: e
+                for e in session.query(Etf).filter(
+                    Etf.symbol.in_(mapped_symbols), Etf.name.isnot(None)
+                ).all()
+            }
+            enriched = [_etf_attrs(etfs_by_symbol[s]) for s in mapped_symbols if s in etfs_by_symbol]
+            enriched.sort(key=lambda x: x.get("aum") or 0, reverse=True)
+            if not enriched:
+                continue
             desc_text = ", ".join(e["symbol"] for e in enriched[:5]) + " 등"
             sector_result.append({
-                "slug": slug,
-                "display_name": display_name,
+                "slug": sector.slug,
+                "display_name": sector.name,
                 "description": desc_text,
                 "etf_list": enriched,
             })
 
-        # Theme lists from S3
+        # Theme lists from DB mapping tables
         theme_result = []
-        for slug, (display_name, path) in THEME_MAP.items():
-            s3_key = f"crawl-result/v2/json/investment/etf-list/by-request-url{path}"
-            try:
-                etf_list = s3_util.download_json(s3_key)
-            except Exception:
-                etf_list = []
-            symbols = [e["symbol"] for e in etf_list]
-            db_etfs = {e.symbol: e for e in session.query(Etf).filter(Etf.symbol.in_(symbols)).all()}
-            enriched = []
-            for item in etf_list:
-                if item["symbol"] in db_etfs:
-                    item.update(_etf_attrs(db_etfs[item["symbol"]]))
-                    enriched.append(item)
+        themes = session.query(EtfTheme).order_by(EtfTheme.sort_order).all()
+        for theme in themes:
+            mappings = (
+                session.query(ThemeEtf)
+                .filter(ThemeEtf.theme_slug == theme.slug)
+                .order_by(ThemeEtf.sort_order)
+                .all()
+            )
+            symbols = [m.symbol for m in mappings]
+            if not symbols:
+                continue
+            etfs_by_symbol = {
+                e.symbol: e
+                for e in session.query(Etf).filter(
+                    Etf.symbol.in_(symbols), Etf.name.isnot(None)
+                ).all()
+            }
+            enriched = [_etf_attrs(etfs_by_symbol[s]) for s in symbols if s in etfs_by_symbol]
+            enriched.sort(key=lambda x: x.get("aum") or 0, reverse=True)
+            if not enriched:
+                continue
             desc_text = ", ".join(e["symbol"] for e in enriched[:5]) + " 등"
             theme_result.append({
-                "slug": slug,
-                "display_name": display_name,
+                "slug": theme.slug,
+                "display_name": theme.name,
                 "description": desc_text,
                 "etf_list": enriched,
             })

@@ -24,7 +24,14 @@ def main():
         logger.info("S3 upload payload logging ENABLED")
 
     from src.utils.slack_util import send_message
+    from src.utils.exchange_rate import update_exchange_rate
     from src.services.etf_detail_service import get_all_etf_symbols, process_etf
+
+    # Update exchange rate first
+    try:
+        update_exchange_rate()
+    except Exception as e:
+        logger.error(f"Exchange rate update failed: {e}")
     from src.services.etf_list_service import (
         prepare_home_and_list,
         prepare_list_by_cagr,
